@@ -1,4 +1,4 @@
-name: Windows RDP + Tailscale (Stable Direct)
+name: Windows RDP + Tailscale Fast Setup
 
 on:
   workflow_dispatch:
@@ -36,15 +36,15 @@ jobs:
           net localgroup administrators $u /add
           Write-Host "✅ User $u created."
 
-      - name: Install Tailscale (direct download)
+      - name: Install Tailscale (direct EXE)
         shell: pwsh
         run: |
-          Write-Host "⬇ Downloading Tailscale MSI..."
-          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi"
-          $out = "$env:TEMP\tailscale.msi"
+          Write-Host "⬇ Downloading Tailscale EXE..."
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.80.0.exe"
+          $out = "$env:TEMP\tailscale.exe"
           Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
           Write-Host "🛠 Installing..."
-          Start-Process -FilePath "msiexec.exe" -ArgumentList "/i "$out" /qn" -Wait
+          Start-Process -FilePath $out -ArgumentList "/quiet" -Wait
           Write-Host "✅ Installed Tailscale."
 
       - name: Start and connect Tailscale
@@ -53,7 +53,7 @@ jobs:
           $exe = "C:\Program Files\Tailscale IPN\tailscale.exe"
           if (!(Test-Path $exe)) { Write-Error "❌ Tailscale not found after install!"; exit 1 }
           Write-Host "🚀 Running tailscale up..."
-          & $exe up --authkey $env:TAILSCALE_AUTH_KEY --accept-routes
+          & $exe up --authkey $env:TAILSCALE_AUTH_KEY --accept-routes --hostname "github-rdp"
           Start-Sleep -Seconds 5
           Write-Host "✅ Connected to Tailscale."
 
