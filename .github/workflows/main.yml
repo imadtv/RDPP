@@ -1,36 +1,36 @@
-name: Create Windows RDP with Tailscale (non-interactive)
+name: Create Windows RDP with Tailscale (fixed installer)
 
 on:
   workflow_dispatch:
 
 jobs:
-  setup-windows-rdp:
+  setup-rdp:
     runs-on: windows-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup and enable RDP via Tailscale
+      - name: Setup Tailscale + RDP
         shell: pwsh
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
           NEW_RDP_USER: ${{ secrets.NEW_RDP_USER || 'rdpuser' }}
           NEW_RDP_PASS: ${{ secrets.NEW_RDP_PASS || 'ChangeMe@1234' }}
         run: |
-          # --- Check auth key ---
+          # --- Check Auth Key ---
           if (-not $env:TAILSCALE_AUTHKEY -or $env:TAILSCALE_AUTHKEY.Trim() -eq "") {
             Write-Error "❌ Missing secret: TAILSCALE_AUTHKEY"
             exit 1
           }
 
-          Write-Host "⬇ Downloading latest Tailscale MSI..."
-          $url = "https://pkgs.tailscale.com/stable/tailscale-ipn-win-latest.msi"
-          $out = "$env:TEMP\tailscale.msi"
+          Write-Host "⬇ Downloading Tailscale installer (EXE)..."
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe"
+          $out = "$env:TEMP\tailscale-setup.exe"
           Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
 
           Write-Host "📦 Installing Tailscale silently..."
-          Start-Process -FilePath "msiexec.exe" -ArgumentList "/i "$out" /qn /norestart" -Wait -NoNewWindow
-          Start-Sleep -Seconds 5
+          Start-Process -FilePath $out -ArgumentList "/S" -Wait -NoNewWindow
+          Start-Sleep -Seconds 6
 
           # Find tailscale.exe
           $tailscaleExe = (Get-ChildItem "C:\Program Files*" -Recurse -ErrorAction SilentlyContinue |
@@ -38,13 +38,12 @@ jobs:
             Select-Object -First 1).FullName
 
           if (-not $tailscaleExe) {
-            Write-Error "❌ tailscale.exe not found after installation!"
+            Write-Error "❌ Could not find tailscale.exe after install!"
             exit 1
           }
 
           Write-Host "✅ Found Tailscale at: $tailscaleExe"
-
-          Write-Host "🚀 Bringing Tailscale up..."
+          Write-Host "🚀 Logging into Tailscale..."
           & $tailscaleExe up --authkey $env:TAILSCALE_AUTHKEY --accept-routes --hostname "github-rdp" | Write-Host
           Start-Sleep -Seconds 3
 
@@ -52,7 +51,6 @@ jobs:
           $user = $env:NEW_RDP_USER
           $pass = $env:NEW_RDP_PASS
           $secure = ConvertTo-SecureString $pass -AsPlainText -Force
-
           if (-not (Get-LocalUser -Name $user -ErrorAction SilentlyContinue)) {
             New-LocalUser -Name $user -Password $secure -FullName "GitHub RDP User" -Description "Created by Workflow"
             Add-LocalGroupMember -Group "Administrators" -Member $user
@@ -67,7 +65,6 @@ jobs:
           Write-Host "🌐 Checking Tailscale IP..."
           & $tailscaleExe ip
 
-          Write-Host "`n✅ Setup complete!"
-          Write-Host "Use RDP to connect via the above Tailscale IP."
+          Write-Host "`n✅ DONE! Connect to your RDP via the above Tailscale IP."
           Write-Host "Username: $user"
           Write-Host "Password: $pass"
