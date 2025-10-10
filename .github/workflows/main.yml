@@ -1,0 +1,46 @@
+name: Windows RDP with Tailscale
+
+on:
+  workflow_dispatch: # يمكن تشغيله يدويًا
+
+jobs:
+  setup-windows-rdp:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set environment variables
+      run: |
+        setx RDP_USER "adamuser"
+        setx RDP_PASS "StrongPassword123!"
+        setx TAILSCALE_AUTH_KEY "tskey-your-auth-key"
+
+    - name: Enable RDP
+      run: |
+        reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+        netsh advfirewall firewall set rule group="Remote Desktop" new enable=yes
+
+    - name: Create user for RDP
+      run: |
+        net user %RDP_USER% %RDP_PASS% /add
+        net localgroup administrators %RDP_USER% /add
+
+    - name: Install Tailscale
+      run: |
+        Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-ipn-win.exe" -OutFile "$env:TEMP\tailscale.exe"
+        Start-Process "$env:TEMP\tailscale.exe" -ArgumentList "install" -Wait
+
+    - name: Connect Tailscale
+      run: |
+        Start-Process "C:\Program Files\Tailscale IPN\tailscale.exe" -ArgumentList "up --authkey $env:TAILSCALE_AUTH_KEY" -Wait
+        timeout /t 10
+
+    - name: Get Tailscale IP
+      run: |
+        $tsIP = & "C:\Program Files\Tailscale IPN\tailscale.exe" ip -4
+        Write-Host "Tailscale RDP Info:"
+        Write-Host "IP: $tsIP"
+        Write-Host "Username: $env:RDP_USER"
+        Write-Host "Password: $env:RDP_PASS"
