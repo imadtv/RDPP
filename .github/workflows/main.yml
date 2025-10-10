@@ -14,9 +14,9 @@ jobs:
     - name: Set environment variables
       shell: pwsh
       run: |
-        $env:RDP_USER = "adamuser"
-        $env:RDP_PASS = "imad22"  # كلمة المرور التي اخترتها
-        $env:TAILSCALE_AUTH_KEY = "tskey-your-auth-key"
+        echo "RDP_USER=adamuser" >> $env:GITHUB_ENV
+        echo "RDP_PASS=imad22" >> $env:GITHUB_ENV
+        echo "TAILSCALE_AUTH_KEY=tskey-your-auth-key" >> $env:GITHUB_ENV
 
     - name: Enable RDP
       shell: pwsh
@@ -29,13 +29,20 @@ jobs:
       run: |
         $user = $env:RDP_USER
         $pass = $env:RDP_PASS
-        # حذف المستخدم إذا كان موجود لتجنب الخطأ
-        if (Get-LocalUser -Name $user -ErrorAction SilentlyContinue) {
-            Remove-LocalUser -Name $user
+
+        if ($user) {
+            # حذف المستخدم إذا كان موجود لتجنب الخطأ
+            if (Get-LocalUser -Name $user -ErrorAction SilentlyContinue) {
+                Remove-LocalUser -Name $user
+            }
+            # إنشاء المستخدم
+            net user $user $pass /add
+            net localgroup administrators $user /add
+            Write-Host "User $user created successfully."
+        } else {
+            Write-Error "RDP_USER is not set!"
+            exit 1
         }
-        # إنشاء المستخدم
-        net user $user $pass /add
-        net localgroup administrators $user /add
 
     - name: Install Tailscale
       shell: pwsh
@@ -53,7 +60,9 @@ jobs:
       shell: pwsh
       run: |
         $tsIP = & "C:\Program Files\Tailscale IPN\tailscale.exe" ip -4
+        Write-Host "=============================="
         Write-Host "Tailscale RDP Info:"
         Write-Host "IP: $tsIP"
         Write-Host "Username: $env:RDP_USER"
         Write-Host "Password: $env:RDP_PASS"
+        Write-Host "=============================="
