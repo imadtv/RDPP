@@ -12,32 +12,45 @@ jobs:
       uses: actions/checkout@v3
 
     - name: Set environment variables
+      shell: pwsh
       run: |
-        setx RDP_USER "adamuser"
-        setx RDP_PASS "StrongPassword123!"
-        setx TAILSCALE_AUTH_KEY "tskey-your-auth-key"
+        $env:RDP_USER = "adamuser"
+        $env:RDP_PASS = "imad22"  # كلمة المرور التي اخترتها
+        $env:TAILSCALE_AUTH_KEY = "tskey-your-auth-key"
 
     - name: Enable RDP
+      shell: pwsh
       run: |
         reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
         netsh advfirewall firewall set rule group="Remote Desktop" new enable=yes
 
     - name: Create user for RDP
+      shell: pwsh
       run: |
-        net user %RDP_USER% %RDP_PASS% /add
-        net localgroup administrators %RDP_USER% /add
+        $user = $env:RDP_USER
+        $pass = $env:RDP_PASS
+        # حذف المستخدم إذا كان موجود لتجنب الخطأ
+        if (Get-LocalUser -Name $user -ErrorAction SilentlyContinue) {
+            Remove-LocalUser -Name $user
+        }
+        # إنشاء المستخدم
+        net user $user $pass /add
+        net localgroup administrators $user /add
 
     - name: Install Tailscale
+      shell: pwsh
       run: |
         Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-ipn-win.exe" -OutFile "$env:TEMP\tailscale.exe"
         Start-Process "$env:TEMP\tailscale.exe" -ArgumentList "install" -Wait
 
     - name: Connect Tailscale
+      shell: pwsh
       run: |
         Start-Process "C:\Program Files\Tailscale IPN\tailscale.exe" -ArgumentList "up --authkey $env:TAILSCALE_AUTH_KEY" -Wait
-        timeout /t 10
+        Start-Sleep -Seconds 10
 
     - name: Get Tailscale IP
+      shell: pwsh
       run: |
         $tsIP = & "C:\Program Files\Tailscale IPN\tailscale.exe" ip -4
         Write-Host "Tailscale RDP Info:"
