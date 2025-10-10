@@ -1,119 +1,73 @@
-name: Create/Enable Windows RDP with Tailscale
+name: Create Windows RDP with Tailscale (non-interactive)
 
 on:
   workflow_dispatch:
 
 jobs:
   setup-windows-rdp:
-    runs-on: windows-latest   # أو "self-hosted" إذا تستخدم self-hosted Windows runner
-    # إذا تستخدم self-hosted تأكد runner يعمل كخدمة مع صلاحيات مسؤول
+    runs-on: windows-latest
     steps:
-      - name: Checkout (not strictly needed)
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Prepare environment variables
-        env:
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
-          NEW_RDP_USER: ${{ secrets.NEW_RDP_USER || 'rdpuser' }}
-          NEW_RDP_PASS: ${{ secrets.NEW_RDP_PASS || 'ChangeMe@1234' }}
-          HOSTNAME_LABEL: ${{ github.run_id }}-rdp
-        run: |
-          echo "Prepared env vars"
-
-      - name: Install Tailscale & enable RDP (PowerShell, runs as admin)"
+      - name: Setup and enable RDP via Tailscale
         shell: pwsh
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
           NEW_RDP_USER: ${{ secrets.NEW_RDP_USER || 'rdpuser' }}
           NEW_RDP_PASS: ${{ secrets.NEW_RDP_PASS || 'ChangeMe@1234' }}
-          HOSTNAME_LABEL: ${{ github.run_id }}-rdp
         run: |
-          # === Helper: fail early if no auth key ===
+          # --- Check auth key ---
           if (-not $env:TAILSCALE_AUTHKEY -or $env:TAILSCALE_AUTHKEY.Trim() -eq "") {
-            Write-Error "TAILSCALE_AUTHKEY is required in repository secrets."
+            Write-Error "❌ Missing secret: TAILSCALE_AUTHKEY"
             exit 1
           }
 
-          Write-Host "1) Installing Tailscale via winget (or MSI fallback)..."
+          Write-Host "⬇ Downloading latest Tailscale MSI..."
+          $url = "https://pkgs.tailscale.com/stable/tailscale-ipn-win-latest.msi"
+          $out = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
 
-          # Attempt winget first (works on modern Windows hosted runners / VMs)
-          try {
-            winget install --id Tailscale.Tailscale -e --silent -h
-          } catch {
-            Write-Warning "winget install failed or not available. Trying MSI installer."
+          Write-Host "📦 Installing Tailscale silently..."
+          Start-Process -FilePath "msiexec.exe" -ArgumentList "/i "$out" /qn /norestart" -Wait -NoNewWindow
+          Start-Sleep -Seconds 5
 
-            $msiUrl = "https://pkgs.tailscale.com/stable/tailscale-ipn-win-latest.msi"
-            $tmp = "$env:TEMP\tailscale.msi"
-            Invoke-WebRequest -Uri $msiUrl -OutFile $tmp -UseBasicParsing
-            Start-Process -FilePath "msiexec.exe" -ArgumentList "/i "$tmp" /qn" -Wait -NoNewWindow
-          }
-
-          Start-Sleep -Seconds 6
-
-          # locate tailscale executable
-          $tailscaleExe = (Get-Command tailscale.exe -ErrorAction SilentlyContinue).Source
-          if (-not $tailscaleExe) {
-            # common install paths
-            $candidates = @(
-              "$env:ProgramFiles\Tailscale IPN\tailscale.exe",
-              "$env:ProgramFiles (x86)\Tailscale IPN\tailscale.exe",
-              "$env:ProgramFiles\Tailscale\tailscale.exe"
-            )
-            foreach ($c in $candidates) {
-              if (Test-Path $c) { $tailscaleExe = $c; break }
-            }
-          }
+          # Find tailscale.exe
+          $tailscaleExe = (Get-ChildItem "C:\Program Files*" -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq "tailscale.exe" } |
+            Select-Object -First 1).FullName
 
           if (-not $tailscaleExe) {
-            Write-Error "Could not find tailscale.exe after install."
+            Write-Error "❌ tailscale.exe not found after installation!"
             exit 1
           }
 
-          Write-Host "Tailscale executable: $tailscaleExe"
+          Write-Host "✅ Found Tailscale at: $tailscaleExe"
 
-          Write-Host "2) Starting Tailscale service and bringing up the node with authkey..."
-          # Ensure service running
-          & $tailscaleExe service install 2>&1 | Write-Host
+          Write-Host "🚀 Bringing Tailscale up..."
+          & $tailscaleExe up --authkey $env:TAILSCALE_AUTHKEY --accept-routes --hostname "github-rdp" | Write-Host
           Start-Sleep -Seconds 3
 
-          # Bring up Tailscale using provided auth key and set hostname
-          $tsUpArgs = @("up", "--authkey", $env:TAILSCALE_AUTHKEY, "--hostname", $env:HOSTNAME_LABEL, "--accept-routes")
-          & $tailscaleExe @tsUpArgs 2>&1 | Write-Host
-
-          Start-Sleep -Seconds 2
-
-          Write-Host "3) Create local user for RDP (if not exists) and set password..."
+          Write-Host "👤 Creating RDP user..."
           $user = $env:NEW_RDP_USER
           $pass = $env:NEW_RDP_PASS
+          $secure = ConvertTo-SecureString $pass -AsPlainText -Force
 
           if (-not (Get-LocalUser -Name $user -ErrorAction SilentlyContinue)) {
-            $securePass = ConvertTo-SecureString $pass -AsPlainText -Force
-            New-LocalUser -Name $user -Password $securePass -FullName "RDP User" -Description "Created by GitHub Actions + Tailscale" -PasswordNeverExpires
+            New-LocalUser -Name $user -Password $secure -FullName "GitHub RDP User" -Description "Created by Workflow"
             Add-LocalGroupMember -Group "Administrators" -Member $user
-            Write-Host "Created local user: $user (added to Administrators)"
           } else {
-            Write-Host "User $user already exists. Updating password..."
-            $securePass = ConvertTo-SecureString $pass -AsPlainText -Force
-            Set-LocalUser -Name $user -Password $securePass
+            Set-LocalUser -Name $user -Password $secure
           }
 
-          Write-Host "4) Enable RDP in registry and open firewall rules..."
-          # Enable Remote Desktop
-          Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
+          Write-Host "🔓 Enabling Remote Desktop..."
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-          # Enable RDP firewall rules (Remote Desktop group)
-          Get-NetFirewallRule -Group "@FirewallAPI.dll,-28752" -ErrorAction SilentlyContinue | ForEach-Object { Enable-NetFirewallRule -Name $_.Name -ErrorAction SilentlyContinue } 
-          # fallback: enable common remote desktop rules
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+          Write-Host "🌐 Checking Tailscale IP..."
+          & $tailscaleExe ip
 
-          # Optional: allow RDP only via Tailscale interface by setting firewall rule to the interface (advanced; left as comment)
-          # To limit RDP to Tailscale only you'd typically create a firewall rule scoped to the Tailscale interface IP range.
-          # Example (requires post-start check of Tailscale IP): New-NetFirewallRule -DisplayName "RDP via Tailscale only" -Direction Inbound -Protocol TCP -LocalPort 3389 -RemoteAddress <tailscale-subnet> -Action Allow
-
-          Write-Host "5) Report Tailscale IP(s) and connection status"
-          Start-Sleep -Seconds 3
-          & $tailscaleExe status 2>&1 | Write-Host
-          & $tailscaleExe ip -4 2>&1 | Write-Host
-          & $tailscaleExe ip -6 2>&1 | Write-Host
-
-          Write-Host "DONE. Connect via Tailscale IP (shown above) using user: $user and your password."
+          Write-Host "`n✅ Setup complete!"
+          Write-Host "Use RDP to connect via the above Tailscale IP."
+          Write-Host "Username: $user"
+          Write-Host "Password: $pass"
