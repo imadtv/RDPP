@@ -1,4 +1,4 @@
-name: Windows RDP with Tailscale
+name: Fast Windows RDP with Tailscale (winget)
 
 on:
   workflow_dispatch:
@@ -6,94 +6,93 @@ on:
 jobs:
   setup-windows-rdp:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v3
 
-      - name: Set environment variables
+      - name: Set env (use Secrets for auth key)
         shell: pwsh
         run: |
           echo "RDP_USER=adamuser" >> $env:GITHUB_ENV
           echo "RDP_PASS=Imad22!@#" >> $env:GITHUB_ENV
-          echo "TAILSCALE_AUTH_KEY=tskey-your-auth-key" >> $env:GITHUB_ENV
+          # ضع مفتاح التيلسكل في GitHub Secret باسم TAILSCALE_AUTH_KEY
+          echo "TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}" >> $env:GITHUB_ENV
 
-      - name: Enable RDP and open firewall
+      - name: Enable RDP & firewall
         shell: pwsh
         run: |
           reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
           netsh advfirewall firewall set rule group="Remote Desktop" new enable=yes
-          Write-Host "RDP enabled and firewall rules updated."
 
-      - name: Create or recreate RDP user (safe)
+      - name: Create or recreate RDP user
         shell: pwsh
         run: |
-          $user = $env:RDP_USER
-          $pass = $env:RDP_PASS
-
-          if (-not $user) {
-            Write-Error "RDP_USER is not set. Aborting."
-            exit 1
-          }
-
-          # اذا كان المستخدم موجود نحذفه اولا لتجنب اخطاء التكرار
+          $user = $env:RDP_USER; $pass = $env:RDP_PASS
+          if (-not $user) { Write-Error "RDP_USER not set"; exit 1 }
           net user $user > $null 2>&1
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "User $user exists - removing before recreate..."
-            net user $user /delete
-          }
-
-          # انشاء المستخدم واضافته لمجموعة المديرين
+          if ($LASTEXITCODE -eq 0) { net user $user /delete }
           net user $user $pass /add
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Failed to create user $user. Check password policy."
-            exit 1
-          }
+          if ($LASTEXITCODE -ne 0) { Write-Error "Failed create user"; exit 1 }
           net localgroup administrators $user /add
-          Write-Host "User $user created and added to Administrators."
+          Write-Host "User created."
 
-      - name: Install Tailscale
+      - name: Install Tailscale via winget (fast)
         shell: pwsh
         run: |
-          $installerUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.88.3.exe"
-          $installerPath = Join-Path $env:TEMP "tailscale-installer.exe"
-          Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath
-          Start-Process -FilePath $installerPath -ArgumentList "install" -Wait
-          Write-Host "Tailscale installer finished."
-
-      - name: Start and connect Tailscale
+          Write-Host "Trying winget install tailscale..."
+          $err = $null
+          try {
+            winget install --silent --accept-package-agreements --accept-source-agreements --id Tailscale.Tailscale -e
+          } catch {
+            $err = $_
+          }
+          if ($err) {
+            Write-Host "winget failed or not available; will fallback to direct download."
+            exit 2
+          } else {
+            Write-Host "winget installed Tailscale (or it was already present)."
+          }
+      - name: Fallback: Download Tailscale if winget failed
+        if: failure() && steps['Install Tailscale via winget'].outcome == 'failure' || failure() && steps['Install Tailscale via winget'].conclusion == 'failure'
         shell: pwsh
         run: |
-          $tsExe = "C:\Program Files\Tailscale IPN\tailscale.exe"
-          if (-not (Test-Path $tsExe)) {
-            # بعض صور Windows قد تنصب البرنامج في مسار مختلف؛ حاول المسار البديل
-            $tsExe = "$env:ProgramFiles\Tailscale IPN\tailscale.exe"
-          }
-          if (-not (Test-Path $tsExe)) {
-            Write-Error "Tailscale executable not found; cannot start."
-            exit 1
-          }
-          # تشغيل tailscale up مع المفتاح
-          & $tsExe up --authkey $env:TAILSCALE_AUTH_KEY
-          Start-Sleep -Seconds 10
-          Write-Host "Tailscale up command executed."
+          $installerUrl = "https://pkgs.tailscale.com/stable/tailscale-ipn-win.msi"
+          $installerPath = Join-Path $env:TEMP "tailscale.msi"
+          Write-Host "Downloading fallback installer..."
+          Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
+          Start-Process -FilePath "msiexec.exe" -ArgumentList "/i "$installerPath" /qn" -Wait
+          Write-Host "Fallback install completed."
 
-      - name: Get Tailscale IP and print RDP info
+      - name: Ensure Tailscale executable found
         shell: pwsh
         run: |
-          $tsExe = "C:\Program Files\Tailscale IPN\tailscale.exe"
-          if (-not (Test-Path $tsExe)) { $tsExe = "$env:ProgramFiles\Tailscale IPN\tailscale.exe" }
-          if (-not (Test-Path $tsExe)) {
-            Write-Error "Tailscale executable not found; cannot get IP."
-            exit 1
-          }
-          $tsIP = & $tsExe ip -4 2>$null
-          if (-not $tsIP) { $tsIP = "Could not determine Tailscale IPv4" }
-          Write-Host "=============================="
-          Write-Host "Tailscale RDP Info:"
-          Write-Host "IP: $tsIP"
+          $possible = @(
+            "C:\Program Files\Tailscale IPN\tailscale.exe",
+            "$env:ProgramFiles\Tailscale IPN\tailscale.exe",
+            "C:\Program Files (x86)\Tailscale IPN\tailscale.exe"
+          )
+          $ts = $possible | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $ts) { Write-Error "Tailscale executable not found after install."; exit 1 }
+          Write-Host "Found tailscale exe at $ts"
+          echo "TAILSCALE_EXE=$ts" >> $env:GITHUB_ENV
+
+      - name: Start and up tailscale quickly
+        shell: pwsh
+        run: |
+          $ts = $env:TAILSCALE_EXE
+          & $ts up --authkey $env:TAILSCALE_AUTH_KEY --accept-routes
+          Start-Sleep -Seconds 5
+
+      - name: Print IP & RDP info
+        shell: pwsh
+        run: |
+          $ts = $env:TAILSCALE_EXE
+          $ip = & $ts ip -4 2>$null
+          if (-not $ip) { $ip = "Could not get Tailscale IP" }
+          Write-Host "---- Tailscale RDP Info ----"
+          Write-Host "IP: $ip"
           Write-Host "Username: $env:RDP_USER"
           Write-Host "Password: $env:RDP_PASS"
-          Write-Host "Note: Use the Tailscale IP to connect via RDP (port 3389)."
-          Write-Host "=============================="
+          Write-Host "Use RDP to connect to the Tailscale IP on port 3389."
