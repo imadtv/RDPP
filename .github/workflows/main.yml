@@ -15,7 +15,6 @@ jobs:
       - name: Set environment variables
         shell: pwsh
         run: |
-          # اضف المتغيرات الى GITHUB_ENV لتكون متاحة للخطوات التالية
           echo "RDP_USER=adamuser" >> $env:GITHUB_ENV
           echo "RDP_PASS=Imad22!@#" >> $env:GITHUB_ENV
           echo "TAILSCALE_AUTH_KEY=tskey-your-auth-key" >> $env:GITHUB_ENV
@@ -57,9 +56,10 @@ jobs:
       - name: Install Tailscale
         shell: pwsh
         run: |
-          $out = Join-Path $env:TEMP "tailscale-installer.exe"
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-ipn-win.exe" -OutFile $out
-          Start-Process -FilePath $out -ArgumentList "install" -Wait
+          $installerUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.88.3.exe"
+          $installerPath = Join-Path $env:TEMP "tailscale-installer.exe"
+          Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath
+          Start-Process -FilePath $installerPath -ArgumentList "install" -Wait
           Write-Host "Tailscale installer finished."
 
       - name: Start and connect Tailscale
@@ -71,7 +71,7 @@ jobs:
             $tsExe = "$env:ProgramFiles\Tailscale IPN\tailscale.exe"
           }
           if (-not (Test-Path $tsExe)) {
-            Write-Error "Tailscale executable not found at expected path: $tsExe"
+            Write-Error "Tailscale executable not found; cannot start."
             exit 1
           }
           # تشغيل tailscale up مع المفتاح
